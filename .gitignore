@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+# Release signing secrets - keep a private backup, never publish.
+keystore/
+keystore.properties
+# Laptop test-harness identity (private key) and state.
+cli-data/
+# Built APKs are published as GitHub Release assets, not committed.
+*.apk
+# Local assistant settings for this machine.
+.claude/settings.local.json
