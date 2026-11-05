@@ -42,31 +42,41 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
 
+/** Graphite & Copper palette shared by every screen. */
 object Ui {
-    val bg = Color(0xFF0E1116)
-    val surface = Color(0xFF151A22)
-    val key = Color(0xFF1E2430)
-    val keyPressed = Color(0xFF2C3546)
-    val accent = Color(0xFF5B8CFF)
-    val onAccent = Color(0xFF07152F)
-    val text = Color(0xFFE8ECF3)
-    val textDim = Color(0xFFA3ADBD)
-    val success = Color(0xFF6EE7A0)
-    val warning = Color(0xFFFBBF24)
-    val danger = Color(0xFFFF8A8A)
-    val outline = Color(0xFF2E3646)
+    val bg = Color(0xFF1B1918)          // graphite
+    val surface = Color(0xFF262321)     // charcoal card
+    val key = Color(0xFF2E2A28)         // raised button
+    val keyPressed = Color(0xFF3A3532)
+    val border = Color(0xFF38332F)
+    val accent = Color(0xFFC9814F)      // satin copper
+    val accentLight = Color(0xFFDE9A68)
+    val accentDark = Color(0xFFA25F36)
+    val accentText = Color(0xFFE6A97C)
+    val onAccent = Color(0xFFFFF4EA)
+    val text = Color(0xFFF3EADF)        // warm ivory
+    val textDim = Color(0xFFB8ADA2)
+    val textMuted = Color(0xFF8C8279)
+    val success = Color(0xFF3DD3A8)     // teal connection
+    val warning = Color(0xFFF2B65A)
+    val danger = Color(0xFFFF8070)
+    val outline = Color(0xFF4A433E)
+
+    val copper = androidx.compose.ui.graphics.Brush.linearGradient(listOf(accentLight, accent, accentDark))
 
     val colors: ColorScheme = darkColorScheme(
         primary = accent, onPrimary = onAccent, background = bg, onBackground = text,
         surface = surface, onSurface = text, surfaceVariant = key, onSurfaceVariant = textDim,
         surfaceContainer = surface, surfaceContainerHigh = key, surfaceContainerHighest = keyPressed,
-        secondaryContainer = Color(0xFF263552), onSecondaryContainer = text,
-        error = danger, outline = outline, outlineVariant = outline,
+        surfaceContainerLow = surface, surfaceContainerLowest = bg,
+        secondaryContainer = Color(0xFF4A3426), onSecondaryContainer = text,
+        error = danger, outline = outline, outlineVariant = border,
     )
 }
 
 @Composable
-fun TvRemoteTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = Ui.colors, content = content)
+fun TvRemoteTheme(content: @Composable () -> Unit) =
+    MaterialTheme(colorScheme = Ui.colors, typography = AppFonts.typography, content = content)
 
 /** Haptic tick; `true` = long-press strength. Provided by the root so the setting is honoured. */
 val LocalHaptics = staticCompositionLocalOf<(Boolean) -> Unit> { {} }

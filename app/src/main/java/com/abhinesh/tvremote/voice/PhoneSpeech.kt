@@ -43,6 +43,8 @@ sealed interface SpeechUi {
     data class Processing(val engine: String) : SpeechUi
     data class Heard(val alternatives: List<String>, val engine: String, val language: String, val detectedLanguage: String?) : SpeechUi
     data class Error(val message: String) : SpeechUi
+    /** The in-app recognisers failed: the app root opens Google's own voice popup for [language]. */
+    data class Popup(val language: String) : SpeechUi
 }
 
 /** Per-language support as reported by the on-device recogniser (Android 13+). */
@@ -95,7 +97,7 @@ class PhoneSpeech(private val context: Context) {
         val result = CompletableDeferred<LanguageSupport?>()
         val r = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         try {
-            r.checkRecognitionSupport(intent(tag, emptyList()), ContextCompat.getMainExecutor(context), object : RecognitionSupportCallback {
+            r.checkRecognitionSupport(intent(tag, emptyList(), onDevice = true), ContextCompat.getMainExecutor(context), object : RecognitionSupportCallback {
                 override fun onSupportResult(s: RecognitionSupport) {
                     fun has(list: List<String>) = list.any { it.equals(tag, true) || it.substringBefore('-').equals(tag.substringBefore('-'), true) }
                     result.complete(LanguageSupport(has(s.installedOnDeviceLanguages), has(s.supportedOnDeviceLanguages), has(s.onlineLanguages), has(s.pendingOnDeviceLanguages)))
@@ -114,78 +116,134 @@ class PhoneSpeech(private val context: Context) {
     fun downloadLanguage(tag: String): Boolean {
         if (Build.VERSION.SDK_INT < 33 || !onDeviceAvailable()) return false
         val r = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-        return runCatching { r.triggerModelDownload(intent(tag, emptyList())); true }.getOrDefault(false).also {
+        return runCatching { r.triggerModelDownload(intent(tag, emptyList(), onDevice = true)); true }.getOrDefault(false).also {
             supportCache.remove(tag)
             main.postDelayed({ r.destroy() }, 2_000)
         }
     }
 
-    /** Push-to-talk pressed. */
+    /** One way of recognising speech: the on-device recogniser, or a speech service (null = the phone's default). */
+    private sealed interface Engine {
+        data object OnDevice : Engine
+        data class Service(val component: ComponentName?, val label: String) : Engine
+    }
+
+    private var plan: List<Engine> = emptyList()
+    private var planIndex = 0
+    private var language = "en-IN"
+
+    /**
+     * Engines to try, best first. Google's speech service is preferred because phone makers'
+     * own services (e.g. vivo's) often don't serve other apps; then the phone's default; then on-device.
+     */
+    private fun enginePlan(prefs: SpeechPrefs): List<Engine> {
+        val installed = runCatching { services() }.getOrDefault(emptyList())
+        val google = installed.sortedBy { (c, _) ->
+            when (c.packageName) { "com.google.android.googlequicksearchbox" -> 0; "com.google.android.tts" -> 1; else -> 2 }
+        }.filter { it.first.packageName.startsWith("com.google.") }.map { Engine.Service(it.first, it.second) }
+        val default = if (SpeechRecognizer.isRecognitionAvailable(context)) listOf(Engine.Service(null, "the phone's speech service")) else emptyList()
+        val onDevice = if (onDeviceAvailable()) listOf(Engine.OnDevice) else emptyList()
+        val chosen = prefs.engine.takeIf { it.contains('/') }?.let { ComponentName.unflattenFromString(it) }
+            ?.let { c -> listOf(Engine.Service(c, installed.firstOrNull { it.first == c }?.second ?: c.packageName)) } ?: emptyList()
+        if (prefs.onDeviceOnly) return onDevice
+        return when (prefs.engine) {
+            "ondevice" -> onDevice + google + default
+            "default" -> default + google + onDevice
+            "auto" -> google + default + onDevice
+            else -> chosen + google + default + onDevice
+        }.distinct()
+    }
+
+    /** Button pressed: the microphone opens straight away with the first working engine. */
+    @Suppress("RedundantSuspendModifier")
     suspend fun start(prefs: SpeechPrefs) {
         cancel()
         holding = true
         heardSpeech = false
         detected = null
         activePrefs = prefs
-        val language = if (prefs.language == SpeechLanguages.AUTO) "en-IN" else prefs.language
-        val support = if (prefs.language == SpeechLanguages.AUTO) null else languageSupport(language)
-        if (!holding) return // released while checking
-        val wantOnDevice = when (prefs.engine) {
-            "ondevice" -> true
-            "auto" -> onDeviceAvailable() && (support == null || support.installed)
-            else -> false
-        }
-        if (prefs.onDeviceOnly && !(wantOnDevice && onDeviceAvailable())) {
-            _state.value = SpeechUi.Error(
-                when {
-                    !onDeviceAvailable() -> "This phone has no on-device speech recogniser. Turn off \"On-device only\" to use the phone's speech service (it may use the internet)."
-                    support?.supportedOnDevice == true -> "${SpeechLanguages.name(language)} isn't downloaded for on-device use yet. Tap \"Download for offline use\" in Voice settings, or turn off \"On-device only\"."
-                    else -> "This phone's on-device recogniser doesn't support ${SpeechLanguages.name(language)}. Turn off \"On-device only\" to use the phone's speech service (it may use the internet)."
-                },
-            )
+        language = if (prefs.language == SpeechLanguages.AUTO) "en-IN" else prefs.language
+        lastEngineNote = ""
+        plan = enginePlan(prefs)
+        planIndex = 0
+        if (plan.isEmpty()) {
+            if (prefs.onDeviceOnly) {
+                _state.value = SpeechUi.Error("This phone has no on-device speech recogniser. Turn off \"On-device only\" in Voice options.")
+            } else if (popupAvailable()) {
+                _state.value = SpeechUi.Popup(language)
+            } else {
+                _state.value = SpeechUi.Error("No speech recognition service is installed. Install or update the Google app, then try again.")
+            }
             holding = false
             return
         }
-        launch(prefs, language, wantOnDevice && onDeviceAvailable(), fallbackNote = support.noteFor(language))
+        if (prefs.engine == "popup" && popupAvailable()) { holding = false; _state.value = SpeechUi.Popup(language); return }
+        launch(plan[0])
     }
 
-    private fun LanguageSupport?.noteFor(language: String): String = when {
-        this == null -> ""
-        installed -> ""
-        supportedOnDevice -> "${SpeechLanguages.name(language)} can be downloaded for offline use (Voice settings)."
-        else -> "${SpeechLanguages.name(language)} isn't available offline on this phone."
-    }
-
-    private fun launch(prefs: SpeechPrefs, language: String, onDevice: Boolean, fallbackNote: String) {
-        val component = prefs.engine.takeIf { it.contains('/') }?.let { ComponentName.unflattenFromString(it) }
-        val r = when {
-            onDevice && Build.VERSION.SDK_INT >= 31 -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-            component != null -> SpeechRecognizer.createSpeechRecognizer(context, component)
-            else -> SpeechRecognizer.createSpeechRecognizer(context)
-        }
-        if (!onDevice && component == null && !SpeechRecognizer.isRecognitionAvailable(context)) {
-            r.destroy()
-            _state.value = SpeechUi.Error("No speech recognition service is installed (for example the Google app). Phone commands need one.")
+    /** The next engine in the plan, or Google's voice popup when every in-app engine failed. */
+    private fun tryNext(lastError: String): Boolean {
+        recognizer?.let { runCatching { it.destroy() } }
+        recognizer = null
+        if (heardSpeech) return false // the words are gone; ask the user to speak again
+        planIndex++
+        if (planIndex < plan.size) { launch(plan[planIndex]); return true }
+        val prefs = activePrefs
+        if (prefs != null && !prefs.onDeviceOnly && popupAvailable()) {
+            Log.d(TAG, "all engines failed ($lastError); opening the voice popup")
             holding = false
-            return
+            _state.value = SpeechUi.Popup(language)
+            return true
         }
+        return false
+    }
+
+    private fun launch(engine: Engine) {
+        val prefs = activePrefs ?: return
+        val onDevice = engine is Engine.OnDevice
+        val r = runCatching {
+            when (engine) {
+                Engine.OnDevice -> SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+                is Engine.Service -> if (engine.component != null) SpeechRecognizer.createSpeechRecognizer(context, engine.component)
+                else SpeechRecognizer.createSpeechRecognizer(context)
+            }
+        }.getOrNull()
+        if (r == null) { if (!tryNext("create failed")) finish(SpeechUi.Error("Couldn't start speech recognition on this phone.")); return }
         usingOnDevice = onDevice
-        engineLabel = when {
-            onDevice -> "on this phone (on-device)"
-            component != null -> "by ${services().firstOrNull { it.first == component }?.second ?: component.packageName} (may use the internet)"
-            else -> "by the phone's speech service (may use the internet)"
+        engineLabel = when (engine) {
+            Engine.OnDevice -> "on this phone (on-device)"
+            is Engine.Service -> "by ${engine.label} (may use the internet)"
         }
-        lastEngineNote = fallbackNote
         val id = ++session
         recognizer = r
         r.setRecognitionListener(listener(id, language))
         _state.value = SpeechUi.Preparing(engineLabel)
-        Log.d(TAG, "start engine=${if (onDevice) "on-device" else component?.packageName ?: "default"} lang=$language auto=${prefs.language == SpeechLanguages.AUTO}")
-        r.startListening(intent(if (prefs.language == SpeechLanguages.AUTO) SpeechLanguages.AUTO else language, prefs.biasing))
-        main.postDelayed({ if (session == id && holding) stop() }, MAX_LISTEN_MS)
+        Log.d(TAG, "start engine=${if (onDevice) "on-device" else (engine as Engine.Service).component?.packageName ?: "default"} lang=$language")
+        runCatching { r.startListening(intent(if (prefs.language == SpeechLanguages.AUTO) SpeechLanguages.AUTO else language, prefs.biasing, onDevice)) }
+            .onFailure { if (!tryNext("startListening threw")) finish(SpeechUi.Error("Couldn't start speech recognition on this phone.")); return }
+        // Some speech services accept the request but never answer: move on if the mic isn't ready soon.
+        main.postDelayed({ if (session == id && _state.value is SpeechUi.Preparing) { Log.d(TAG, "engine silent; trying the next"); tryNext("no response") || run { finish(SpeechUi.Error("The speech service didn't respond. Try again.")); true } } }, READY_TIMEOUT_MS)
+        main.postDelayed({ if (session == id && (_state.value is SpeechUi.Listening)) stop() }, MAX_LISTEN_MS)
     }
 
-    private fun intent(language: String, biasing: List<String>) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    /** Google's voice popup (RecognizerIntent activity): works on almost every phone with the Google app. */
+    fun popupIntent(language: String): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+        putExtra(RecognizerIntent.EXTRA_PROMPT, "Say a TV command")
+    }
+
+    fun popupAvailable(): Boolean = popupIntent("en-IN").resolveActivity(context.packageManager) != null
+
+    /** Result from the popup, delivered by the app root. */
+    fun popupResult(alternatives: List<String>?) {
+        val list = alternatives.orEmpty().filter { it.isNotBlank() }
+        _state.value = if (list.isEmpty()) SpeechUi.Idle else SpeechUi.Heard(list, "by Google voice (may use the internet)", language, null)
+    }
+
+    private fun intent(language: String, biasing: List<String>, onDevice: Boolean) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
@@ -201,17 +259,29 @@ class PhoneSpeech(private val context: Context) {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
         }
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+        // Only the on-device recogniser is asked to stay offline; for a speech service this flag can
+        // make it fail when the offline pack for the language isn't downloaded.
+        if (onDevice) putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         if (Build.VERSION.SDK_INT >= 33 && biasing.isNotEmpty()) putStringArrayListExtra(RecognizerIntent.EXTRA_BIASING_STRINGS, ArrayList(biasing.take(50)))
     }
 
-    /** Push-to-talk released: the microphone stops now; the final result follows. */
+    /** Finish now: the microphone stops and the final result follows. Before any speech, it just cancels. */
     fun stop() {
         holding = false
         val r = recognizer ?: return
         val s = _state.value
-        if (s is SpeechUi.Listening || s is SpeechUi.Preparing) _state.value = SpeechUi.Processing(engineLabel)
+        if (s is SpeechUi.Preparing || (s is SpeechUi.Listening && !heardSpeech)) { cancel(); return }
+        if (s is SpeechUi.Listening) _state.value = SpeechUi.Processing(engineLabel)
         r.stopListening()
+    }
+
+    /**
+     * Finger lifted. If you were speaking, recognition finishes now. If you let go before speaking
+     * (or before the mic was ready), it keeps listening and ends by itself when you stop talking.
+     */
+    fun release() {
+        holding = false
+        if (_state.value is SpeechUi.Listening && heardSpeech) stop()
     }
 
     /** Cancelled: microphone off, recogniser destroyed, nothing executed. */
@@ -246,6 +316,7 @@ class PhoneSpeech(private val context: Context) {
         override fun onPartialResults(partialResults: Bundle?) {
             if (!current()) return
             val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+            if (text.isNotBlank()) heardSpeech = true
             (_state.value as? SpeechUi.Listening)?.let { _state.value = it.copy(partial = text) }
         }
         override fun onLanguageDetection(results: Bundle) {
@@ -260,27 +331,23 @@ class PhoneSpeech(private val context: Context) {
             val auto = activePrefs?.language == SpeechLanguages.AUTO
             if (auto && detected == null && list.isNotEmpty()) _autoDetect.value = false
             Log.d(TAG, "results n=${list.size} detected=$detected")
-            finish(if (list.isEmpty()) SpeechUi.Error("Didn't catch that. Hold the button, wait for \"Speak now\", then speak.")
+            finish(if (list.isEmpty()) SpeechUi.Error("Didn't catch that. Press the mic and speak clearly.")
             else SpeechUi.Heard(list, engineLabel, if (auto) SpeechLanguages.AUTO else language, detected))
         }
         override fun onError(error: Int) {
             if (!current()) return
             Log.d(TAG, "error $error onDevice=$usingOnDevice heard=$heardSpeech")
-            val prefs = activePrefs
-            // On-device recogniser lacks this language: switch to the phone's speech service while the button is still held.
-            if ((error == 12 || error == 13) && usingOnDevice && prefs != null && !prefs.onDeviceOnly && holding && !heardSpeech) {
-                recognizer?.let { runCatching { it.destroy() } }
-                recognizer = null
-                launch(prefs.copy(engine = "default"), language, onDevice = false,
-                    fallbackNote = "${SpeechLanguages.name(language)} isn't available on-device here, so the phone's speech service is used.")
-                return
-            }
+            // Nothing said / no permission: a real answer, not an engine problem.
+            val userSide = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
+            // Any other error before speech: this engine can't serve us, so try the next one.
+            if (!userSide && tryNext("error $error")) return
             finish(SpeechUi.Error(describe(error, language)))
         }
     }
 
     private fun describe(error: Int, language: String): String = when (error) {
-        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that. Hold the button, wait for \"Speak now\", then speak."
+        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Didn't catch that. Press the mic and speak clearly."
         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is off for this app."
         SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
             "The speech service needs the internet for ${SpeechLanguages.name(language)} and couldn't reach it."
@@ -297,5 +364,6 @@ class PhoneSpeech(private val context: Context) {
     private companion object {
         const val TAG = "TvRemoteVoice"
         const val MAX_LISTEN_MS = 15_000L
+        const val READY_TIMEOUT_MS = 4_000L
     }
 }

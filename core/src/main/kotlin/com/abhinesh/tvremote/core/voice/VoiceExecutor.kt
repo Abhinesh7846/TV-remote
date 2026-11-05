@@ -36,6 +36,7 @@ class VoiceExecutor(
     suspend fun execute(action: VoiceAction): ExecResult {
         when (action) {
             is VoiceAction.OpenApp -> return fromLaunch(launch(action.app))
+            is VoiceAction.Search -> return search(action)
             VoiceAction.PowerOff -> return fromPower(power(false))
             VoiceAction.PowerOn -> return fromPower(power(true))
             else -> {}
@@ -103,6 +104,26 @@ class VoiceExecutor(
             got -> ExecResult(ExecResult.Outcome.CONFIRMED, if (wantMuted) "The TV is muted." else "The TV is unmuted.")
             now == null -> ExecResult(ExecResult.Outcome.SENT, "Mute key sent. The TV doesn't report its mute state.")
             else -> ExecResult(ExecResult.Outcome.SENT, "Mute key sent, but the TV didn't report the change.")
+        }
+    }
+
+    /** Tries the app's search link, then falls back to just opening the app. */
+    private suspend fun search(a: VoiceAction.Search): ExecResult {
+        val searchLinks = com.abhinesh.tvremote.core.share.SearchLinks.forShortcut(a.app.id, a.query)
+        if (searchLinks.isEmpty()) {
+            val r = launch(a.app)
+            return if (r.success) ExecResult(ExecResult.Outcome.NEEDS_YOU, "Opened ${a.app.label}. Search for \"${a.query}\" on the TV; this app can't search inside it.")
+            else fromLaunch(r)
+        }
+        val r = launch(a.app.copy(targets = searchLinks + a.app.targets))
+        return when {
+            r is LaunchResult.Confirmed && r.via in searchLinks ->
+                ExecResult(ExecResult.Outcome.CONFIRMED, "Searching \"${a.query}\" in ${a.app.label}. The TV opened ${a.app.label}; pick the title from the results.")
+            r is LaunchResult.AlreadyOpen ->
+                ExecResult(ExecResult.Outcome.SENT, "Search for \"${a.query}\" sent to ${a.app.label} (it was already open). Check the TV.")
+            r is LaunchResult.Confirmed ->
+                ExecResult(ExecResult.Outcome.NEEDS_YOU, "${a.app.label} opened, but it didn't accept the search. Search for \"${a.query}\" on the TV.")
+            else -> fromLaunch(r)
         }
     }
 

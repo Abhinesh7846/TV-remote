@@ -126,7 +126,8 @@ class ProtocolEncodingTest {
     }
 
     @Test fun shortcutTargets() {
-        assertEquals("market://launch?id=com.netflix.ninja", AppShortcut.toAppLink("com.netflix.ninja"))
+        // A bare package opens its Play Store page (accepted by the MiTV-AXFR2; market://launch was refused).
+        assertEquals("market://details?id=com.netflix.ninja", AppShortcut.toAppLink("com.netflix.ninja"))
         assertEquals("netflix://", AppShortcut.toAppLink("netflix://"))
         assertEquals("https://www.youtube.com", AppShortcut.toAppLink(" https://www.youtube.com "))
     }

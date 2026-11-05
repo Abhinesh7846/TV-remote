@@ -23,6 +23,9 @@ sealed interface VoiceAction {
     data object PowerOff : VoiceAction { override val summary get() = "Put the TV in standby" }
     data object PowerOn : VoiceAction { override val summary get() = "Turn the TV on" }
     data class Type(val text: String) : VoiceAction { override val summary get() = "Type \"$text\"" }
+    data class Search(val app: AppShortcut, val query: String) : VoiceAction {
+        override val summary get() = "Search \"$query\" in ${app.label}"
+    }
 }
 
 sealed interface Interpretation {
@@ -146,6 +149,9 @@ object VoiceInterpreter {
             return Interpretation.Clarify("Which app: ${apps.joinToString(" or ") { it.label }}?", apps.map { verb(it) }, utterance)
         }
         val app = apps.firstOrNull()
+        // Words left after removing commands, app names and fillers: a title to search for.
+        val query = leftover(text, hits)
+        val searchVerb = openWord || Concept.SEARCH in c || Concept.PLAY_OR_OPEN in c
         when {
             closeWord && openWord -> {
                 val a = app ?: context.recentApp()
@@ -155,6 +161,13 @@ object VoiceInterpreter {
             closeWord && app != null -> intents += VoiceAction.CloseApp(app)
             closeWord && tvWord && !pronoun -> intents += VoiceAction.PowerOff // "टीवी बंद करो", "close the TV"
             closeWord -> intents += VoiceAction.CloseApp(null) // "close it", "close this app", "బంద్ చేయి"
+            // "play Stranger Things on Netflix", "यूट्यूब पर पुष्पा गाने चलाओ", "search Jawan"
+            searchVerb && query.isNotEmpty() && !soundHandled && !tvWord && c.none { it in STANDALONE } -> {
+                if (app != null) intents += VoiceAction.Search(app, query)
+                else return Interpretation.Clarify("Search for \"$query\" in which app?", shortcuts.take(4).map { VoiceAction.Search(it, query) }, utterance)
+            }
+            Concept.SEARCH in c && query.isEmpty() ->
+                return Interpretation.Clarify("What should I search for? Say, for example, \"search Jawan on JioHotstar\".", emptyList(), utterance)
             openWord && app != null -> intents += VoiceAction.OpenApp(app)
             openWord && tvWord && !pronoun -> intents += VoiceAction.PowerOn // "TV ఆన్ చెయ్యి", "टीवी चालू करो"
             openWord && pronoun -> {
@@ -197,6 +210,8 @@ object VoiceInterpreter {
         if (Concept.PLAY_OR_OPEN in c && app == null && !pronoun) intents += VoiceAction.Key(KeyCodes.MEDIA_PLAY)
         if (Concept.SETTINGS in c) intents += VoiceAction.Key(KeyCodes.SETTINGS)
         if (Concept.INPUT in c) intents += VoiceAction.Key(KeyCodes.TV_INPUT)
+        // The Search key opens Google Assistant on this TV (tested on the MiTV-AXFR2).
+        if (Concept.ASSISTANT in c) intents += VoiceAction.Key(KeyCodes.SEARCH)
         // "OK" / "ठीक है" / "సరే" is a filler when another command was spoken.
         if (Concept.OK in c && intents.isEmpty()) intents += VoiceAction.Key(KeyCodes.DPAD_CENTER)
 
@@ -215,7 +230,8 @@ object VoiceInterpreter {
     enum class Concept {
         OPEN, PLAY_OR_OPEN, CLOSE, OFF, ON, TV, POWER, SOUND, UP, DOWN, INCREASE, DECREASE, LOUDER, QUIETER,
         MUTE, UNMUTE, HOME, BACK, NAV_UP, NAV_DOWN, NAV_LEFT, NAV_RIGHT, OK, PAUSE, STOP, NEXT, PREVIOUS,
-        FORWARD, REWIND, PLAY_PAUSE, SETTINGS, INPUT, IT, THIS_APP, YES, NO, WAKE, SLEEP, APP, NUMBER, FILLER,
+        FORWARD, REWIND, PLAY_PAUSE, SETTINGS, INPUT, IT, THIS_APP, YES, NO, WAKE, SLEEP, APP, NUMBER, FILLER, SEARCH,
+        ASSISTANT,
     }
 
     /** Concepts that make a bare "off"/"on" mean something other than TV power. */
@@ -225,13 +241,18 @@ object VoiceInterpreter {
     private val STANDALONE = setOf(
         Concept.HOME, Concept.BACK, Concept.SETTINGS, Concept.INPUT, Concept.NAV_UP, Concept.NAV_DOWN,
         Concept.NAV_LEFT, Concept.NAV_RIGHT, Concept.NEXT, Concept.PREVIOUS, Concept.FORWARD, Concept.REWIND,
+        Concept.ASSISTANT,
     )
 
     private val LEXICON: List<Pair<String, Concept>> = buildList {
         fun add(concept: Concept, vararg phrases: String) = phrases.forEach { add(it to concept) }
         // English and romanised Hindi/Telugu
         add(Concept.OPEN, "open", "launch", "go to", "switch to", "change to", "show me", "put on", "run", "kholo", "khol do", "kholiye", "khol", "open karo", "open kar do", "open cheyyi", "open chey", "open cheyi", "open chesi", "open cheyandi", "teruvu", "pettu")
-        add(Concept.PLAY_OR_OPEN, "play", "start", "chalao", "chala do", "lagao", "laga do", "shuru karo")
+        add(Concept.PLAY_OR_OPEN, "play", "start", "watch", "chalao", "chala do", "lagao", "laga do", "shuru karo", "dekhna", "dikhao")
+        add(Concept.SEARCH, "search", "search for", "find", "look for", "khojo", "dhundho", "dhoondo", "search karo")
+        add(Concept.SEARCH, "సెర్చ్", "వెతుకు", "వెతకండి", "వెతుకు")
+        add(Concept.SEARCH, "खोजो", "ढूंढो", "ढूँढो", "सर्च", "सर्च करो")
+        add(Concept.CLOSE, "close all", "close everything", "sab band karo", "सब बंद करो", "అన్నీ క్లోజ్")
         add(Concept.CLOSE, "close", "exit", "quit", "get out", "leave", "band karo", "band kar do", "band", "bahar niklo", "close karo", "close cheyyi", "close chey", "musey", "museyi", "moosey")
         add(Concept.OFF, "turn off", "switch off", "off", "off karo", "off cheyyi")
         add(Concept.ON, "turn on", "switch on", "on karo", "on cheyyi", "chalu karo", "chalu")
@@ -262,6 +283,7 @@ object VoiceInterpreter {
         add(Concept.PLAY_PAUSE, "play pause", "play or pause", "toggle play")
         add(Concept.SETTINGS, "settings", "setting")
         add(Concept.INPUT, "input", "source", "hdmi")
+        add(Concept.ASSISTANT, "assistant", "google assistant", "assistant", "hey google", "ok google", "okay google", "voice assistant")
         add(Concept.IT, "it", "this", "that", "ise", "isko", "usko", "idi", "deenni", "adi", "daanni")
         add(Concept.THIS_APP, "this app", "the app", "current app", "this application", "ye app", "is app", "ee app")
         add(Concept.YES, "yes", "yeah", "yep", "sure", "correct", "haan", "ha", "ji haan", "avunu")
@@ -298,6 +320,7 @@ object VoiceInterpreter {
         add(Concept.REWIND, "రివైండ్")
         add(Concept.SETTINGS, "సెట్టింగ్స్", "సెట్టింగ్")
         add(Concept.INPUT, "ఇన్పుట్")
+        add(Concept.ASSISTANT, "అసిస్టెంట్", "అసిస్టెంటు", "గూగుల్ అసిస్టెంట్")
         add(Concept.IT, "ఇది", "దీన్ని", "దాన్ని", "అది", "ఇదే")
         add(Concept.THIS_APP, "ఈ యాప్", "ఈ app")
         add(Concept.YES, "అవును", "అవునండి")
@@ -334,6 +357,7 @@ object VoiceInterpreter {
         add(Concept.REWIND, "रिवाइंड", "पीछे करो")
         add(Concept.SETTINGS, "सेटिंग्स", "सेटिंग")
         add(Concept.INPUT, "इनपुट")
+        add(Concept.ASSISTANT, "असिस्टेंट", "असिस्टेंट", "गूगल असिस्टेंट")
         add(Concept.IT, "इसे", "इसको", "उसे", "उसको", "यह", "ये", "वो", "वह")
         add(Concept.THIS_APP, "यह ऐप", "ये ऐप", "इस ऐप", "इस ऐप को", "यह एप", "ये एप")
         add(Concept.YES, "हाँ", "हां", "हा", "जी हाँ", "जी हां", "जी")
@@ -350,6 +374,25 @@ object VoiceInterpreter {
         "jiohotstar" to listOf("jiohotstar", "jio hotstar", "hotstar", "hot star", "disney hotstar", "jio cinema", "जियो हॉटस्टार", "जिओ हॉटस्टार", "हॉटस्टार", "हॉट स्टार", "जियो सिनेमा", "జియో హాట్‌స్టార్", "జియోహాట్‌స్టార్", "హాట్‌స్టార్", "హాట్ స్టార్", "జియో సినిమా"),
         "primevideo" to listOf("prime video", "prime videos", "prime", "amazon prime", "amazon prime video", "amazon", "प्राइम वीडियो", "प्राइम", "अमेज़न प्राइम", "अमेजन प्राइम", "अमेज़न", "ప్రైమ్ వీడియో", "ప్రైమ్", "అమెజాన్ ప్రైమ్", "అమెజాన్"),
     )
+
+    /** Words that are never part of a title. */
+    private val STOP = setOf(
+        "hey", "hi", "please", "now", "can", "you", "could", "i", "want", "to", "a", "an", "the", "on", "in", "from", "for",
+        "me", "my", "and", "just", "go", "lets", "let", "some", "of", "with", "movie", "movies", "film", "cinema", "video",
+        "ok", "google", "app", "tv", "show", "the movie", "watch",
+        "अभी", "मुझे", "देखना", "है", "कर", "दो", "पर", "में", "को", "का", "की", "के", "और", "से", "फिल्म", "मूवी", "सिनेमा", "वीडियो", "वाला", "ज़रा", "जरा",
+        "లో", "ని", "కి", "ఇప్పుడు", "నాకు", "చూడాలి", "కావాలి", "ఒక", "సినిమా", "మూవీ", "వీడియో", "పెట్టు", "చూపించు",
+    ).map { normalize(it) }.toSet()
+
+    private fun leftover(text: String, hits: List<Hit>): String {
+        val taken = BooleanArray(text.length)
+        for (h in hits) for (k in h.start until h.end) taken[k] = true
+        return Regex("\\S+").findAll(text)
+            .filter { m -> m.range.none { taken[it] } } // a Telugu word with a matched prefix ("యూట్యూబ్‌లో") is not a title
+            .map { it.value }
+            .filterNot { it in STOP }
+            .joinToString(" ")
+    }
 
     private data class Hit(val start: Int, val end: Int, val concept: Concept, val app: AppShortcut? = null, val number: Int? = null)
 

@@ -14,7 +14,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.height
+import androidx.compose.material.icons.rounded.ChevronLeft
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -47,6 +52,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.abhinesh.tvremote.TvRemoteApp
 import com.abhinesh.tvremote.core.AppShortcut
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SwapVert
 
 private val palette = listOf(
     0xFFE50914 to 0xFFFFFFFF, 0xFF1B2A8A to 0xFFFFFFFF, 0xFFCC0000 to 0xFFFFFFFF, 0xFF00A8E1 to 0xFF00131C,
@@ -60,44 +68,66 @@ fun AppsScreen(app: TvRemoteApp) {
     val launching by app.repo.launching.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<AppShortcut?>(null) }
     var confirmReset by remember { mutableStateOf(false) }
+    var editMode by remember { mutableStateOf(false) }
 
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    var query by remember { mutableStateOf("") }
+    val shown = list.filter { query.isBlank() || it.label.contains(query.trim(), ignoreCase = true) || it.aliases.any { a -> a.contains(query.trim(), ignoreCase = true) } }
+
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { ScreenTitle("Apps", "Open an app on your TV", Modifier.padding(top = 12.dp)) }
         item {
-            Text("App shortcuts", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
-            Text(
-                "Apps open on the TV, not on this phone. The first four appear on the remote. A launch only shows as opened once the TV reports that app in front.",
-                color = Ui.textDim, style = MaterialTheme.typography.bodySmall,
+            androidx.compose.foundation.text.BasicTextField(
+                value = query, onValueChange = { query = it }, singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ui.text, fontFamily = AppFonts.forText(query)),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(Ui.accent),
+                decorationBox = { inner ->
+                    Row(
+                        Modifier.fillMaxWidth().height(58.dp).clip(RoundedCornerShape(20.dp)).background(Ui.surface)
+                            .border(1.dp, Ui.border, RoundedCornerShape(20.dp)).padding(horizontal = 18.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.Search, null, tint = Ui.textDim, modifier = Modifier.size(26.dp))
+                        Spacer(Modifier.width(14.dp))
+                        Box(Modifier.weight(1f)) {
+                            if (query.isEmpty()) Text("Find an app", color = Ui.textDim, style = MaterialTheme.typography.bodyLarge)
+                            inner()
+                        }
+                    }
+                },
             )
         }
-        itemsIndexed(list, key = { _, s -> s.id }) { i, s ->
-            Row(
-                Modifier.fillMaxWidth().background(Ui.key, RoundedCornerShape(16.dp)).padding(start = 12.dp, top = 10.dp, bottom = 10.dp, end = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(Modifier.size(44.dp).background(Color(s.colorArgb), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-                    Text(s.label.take(1), color = Color(s.onColorArgb), fontWeight = FontWeight.Bold)
+        val cells: List<AppShortcut?> = if (editMode) shown + listOf(null) else shown
+        if (cells.isEmpty()) item { Text("No app called \"$query\". Add it with Edit favourites.", color = Ui.textDim) }
+        items(cells.chunked(2)) { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                row.forEach { s ->
+                    Box(Modifier.weight(1f)) {
+                        if (s == null) {
+                            AddTile { editing = AppShortcut("custom-${System.currentTimeMillis()}", "", "", emptyList(), palette[5].first, palette[5].second) }
+                        } else {
+                            val i = list.indexOf(s)
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                OttTile(s, launching == s.id, Modifier.fillMaxWidth()) { if (editMode) editing = s else app.repo.launch(s) }
+                                if (editMode) Row {
+                                    IconButton(onClick = { store.saveShortcuts(list.move(i, i - 1)) }, enabled = i > 0) { Icon(Icons.Rounded.ChevronLeft, "Move ${s.label} earlier", tint = Ui.text) }
+                                    IconButton(onClick = { editing = s }) { Icon(Icons.Rounded.Edit, "Edit ${s.label}", tint = Ui.accentText) }
+                                    IconButton(onClick = { store.saveShortcuts(list.move(i, i + 1)) }, enabled = i < list.lastIndex) { Icon(Icons.Rounded.ChevronRight, "Move ${s.label} later", tint = Ui.text) }
+                                }
+                            }
+                        }
+                    }
                 }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(s.label + if (i < 4) "" else "  (not on remote)", fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(s.targets.joinToString("  ·  "), color = Ui.textDim, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                IconButton(onClick = { app.repo.launch(s) }, enabled = launching == null) { Icon(Icons.Rounded.PlayArrow, "Open ${s.label} on TV") }
-                IconButton(onClick = { store.saveShortcuts(list.move(i, i - 1)) }, enabled = i > 0) { Icon(Icons.Rounded.ArrowUpward, "Move ${s.label} up") }
-                IconButton(onClick = { store.saveShortcuts(list.move(i, i + 1)) }, enabled = i < list.lastIndex) { Icon(Icons.Rounded.ArrowDownward, "Move ${s.label} down") }
-                IconButton(onClick = { editing = s }) { Icon(Icons.Rounded.Edit, "Edit ${s.label}") }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { editing = AppShortcut("custom-${System.currentTimeMillis()}", "", "", emptyList(), palette[5].first, palette[5].second) }) {
-                    Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(6.dp)); Text("Add shortcut")
-                }
-                OutlinedButton(onClick = { confirmReset = true }) { Text("Reset to defaults") }
-            }
-            Spacer(Modifier.padding(8.dp))
+            OutlineCopperButton(if (editMode) "Done" else "Edit favourites", { editMode = !editMode }, icon = if (editMode) Icons.Rounded.Check else Icons.Rounded.SwapVert)
+            if (editMode) TextButton(onClick = { confirmReset = true }, modifier = Modifier.padding(top = 4.dp)) { Text("Reset to defaults", color = Ui.textDim) }
+            if (editMode) Text("The first four appear on the Remote tab.", color = Ui.textMuted, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp))
         }
     }
+
 
     editing?.let { s ->
         EditShortcutDialog(
@@ -119,6 +149,18 @@ fun AppsScreen(app: TvRemoteApp) {
             confirmButton = { TextButton(onClick = { store.resetShortcuts(); confirmReset = false }) { Text("Reset") } },
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun AddTile(onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(22))
+                .border(1.5.dp, Ui.outline, RoundedCornerShape(22)).clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Rounded.Add, "Add an app", Modifier.size(36.dp), tint = Ui.textDim) }
+        Text("Add", color = Ui.textDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
     }
 }
 
@@ -161,7 +203,7 @@ private fun EditShortcutDialog(initial: AppShortcut, isNew: Boolean, onSave: (Ap
         confirmButton = {
             TextButton(
                 enabled = label.isNotBlank() && targets.isNotEmpty(),
-                onClick = { onSave(initial.copy(label = label.trim(), packageName = pkg, targets = targets, colorArgb = color.first, onColorArgb = color.second, aliases = initial.aliases.ifEmpty { listOf(label.trim().lowercase()) })) },
+                onClick = { onSave(initial.copy(label = label.trim(), packageName = pkg, targets = targets, colorArgb = color.first, onColorArgb = color.second, aliases = if (AppShortcut.DEFAULTS.any { it.id == initial.id }) initial.aliases else listOf(label.trim().lowercase()))) },
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },

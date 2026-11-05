@@ -64,6 +64,20 @@ class VoiceExecutionTest {
         assertEquals(Outcome.NOTHING_TO_DO, ex.execute(VoiceAction.CloseApp(null)).outcome)
     }
 
+    @Test fun searchUsesSearchLinkOrFallsBackToOpeningTheApp() = runBlocking<Unit> {
+        val ex = connected()
+        tv.linkOutcome = { FakeTv.LinkOutcome.Open("com.netflix.ninja") }
+        val ok = ex.execute(VoiceAction.Search(app("netflix"), "stranger things"))
+        assertEquals(Outcome.CONFIRMED, ok.outcome)
+        assertEquals("https://www.netflix.com/search?q=stranger+things", tv.links.last())
+
+        ex.execute(VoiceAction.CloseApp(null))
+        tv.linkOutcome = { l -> if (l.contains("results?")) FakeTv.LinkOutcome.Reject else FakeTv.LinkOutcome.Open("com.google.android.youtube.tv") }
+        val fallback = ex.execute(VoiceAction.Search(app("youtube"), "pushpa"))
+        assertEquals(Outcome.NEEDS_YOU, fallback.outcome) // app opened, but you search yourself
+        assertTrue(fallback.message.contains("didn't accept the search"))
+    }
+
     @Test fun volumeAndMuteAreVerified() = runBlocking<Unit> {
         val ex = connected()
         val r = ex.execute(VoiceAction.Volume(true, 3))

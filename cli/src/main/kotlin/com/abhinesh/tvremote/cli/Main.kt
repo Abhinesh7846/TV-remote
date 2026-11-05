@@ -145,6 +145,13 @@ private suspend fun run(host: String, identity: ClientIdentity, dir: File, actio
                 log("launch ${sc.label}: ${AppLauncher.launch(sc) { s }}")
             }
             "link" -> log("app link sent: ${s.launchAppLink(a.removePrefix("link:"))}")
+            "share" -> {
+                val parsed = com.abhinesh.tvremote.core.share.LinkParser.parse(a.removePrefix("share:"))
+                log("parsed: $parsed")
+                if (parsed is com.abhinesh.tvremote.core.share.ParseResult.Ok) {
+                    log("send: ${com.abhinesh.tvremote.core.share.SendToTv.send(parsed.link) { s }}")
+                }
+            }
             "voice" -> voice(s, File(parts[1]), parts.getOrNull(2)?.toInt() ?: 0, parts.getOrNull(3)?.toInt() ?: 0)
             else -> log("unknown action $a")
         }

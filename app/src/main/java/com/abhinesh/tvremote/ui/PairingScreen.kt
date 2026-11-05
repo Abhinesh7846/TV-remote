@@ -80,9 +80,9 @@ fun PairingScreen(app: TvRemoteApp) {
                     OutlinedButton(onClick = { repo.cancelPairing() }) { Text("Back") }
                 }
             }
-            PairingUi.Idle -> FindTv(app, onPick = { repo.startPairing(it.host, it.name) })
+            PairingUi.Idle, PairingUi.Choosing -> FindTv(app, onPick = { repo.startPairing(it.host, it.name) })
         }
-        if (savedTv != null && pairing is PairingUi.Idle) {
+        if (savedTv != null && (pairing is PairingUi.Idle || pairing is PairingUi.Choosing)) {
             TextButton(onClick = { repo.cancelPairing() }) { Text("Back to the remote") }
         }
     }

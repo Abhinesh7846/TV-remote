@@ -74,6 +74,10 @@ class Store(context: Context) {
 
     fun saveShortcuts(list: List<AppShortcut>) {
         _shortcuts.value = list
+        writeShortcuts(list)
+    }
+
+    private fun writeShortcuts(list: List<AppShortcut>) {
         prefs.edit().putString("shortcuts", JSONArray().apply {
             list.forEach { s ->
                 put(JSONObject().apply {
@@ -82,10 +86,31 @@ class Store(context: Context) {
                     put("aliases", JSONArray(s.aliases))
                 })
             }
-        }.toString()).apply()
+        }.toString()).putInt("shortcutsVersion", SHORTCUTS_VERSION).apply()
     }
 
     fun resetShortcuts() = saveShortcuts(AppShortcut.DEFAULTS)
+
+    private val _routines = MutableStateFlow(loadRoutines())
+    val routines: StateFlow<List<com.abhinesh.tvremote.core.Routine>> = _routines.asStateFlow()
+
+    fun saveRoutines(list: List<com.abhinesh.tvremote.core.Routine>) {
+        _routines.value = list
+        prefs.edit().putString("routines", JSONArray().apply {
+            list.forEach { r -> put(JSONObject().apply { put("id", r.id); put("name", r.name); put("icon", r.icon); put("steps", JSONArray(r.steps)) }) }
+        }.toString()).apply()
+    }
+
+    private fun loadRoutines(): List<com.abhinesh.tvremote.core.Routine> = prefs.getString("routines", null)?.let { raw ->
+        runCatching {
+            val a = JSONArray(raw)
+            (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                com.abhinesh.tvremote.core.Routine(o.getString("id"), o.getString("name"), o.optString("icon", "star"),
+                    o.getJSONArray("steps").let { s -> (0 until s.length()).map { s.getString(it) } })
+            }
+        }.getOrNull()
+    } ?: com.abhinesh.tvremote.core.RoutineSteps.DEFAULTS
 
     private fun loadTv(): SavedTv? = prefs.getString("tv", null)?.let { raw ->
         runCatching {
@@ -114,7 +139,26 @@ class Store(context: Context) {
         }.getOrNull()
     } ?: Settings()
 
-    private fun loadShortcuts(): List<AppShortcut> = prefs.getString("shortcuts", null)?.let { raw ->
+    /**
+     * Shortcuts saved by an older version gain the new default apps (Sony LIV, ZEE5, aha, ...) and the
+     * Play Store fallback links, while keeping the user's own order, edits and custom apps.
+     */
+    private fun loadShortcuts(): List<AppShortcut> {
+        val saved = loadSavedShortcuts() ?: return AppShortcut.DEFAULTS
+        if (prefs.getInt("shortcutsVersion", 1) >= SHORTCUTS_VERSION) return saved
+        val defaults = AppShortcut.DEFAULTS.associateBy { it.id }
+        val upgraded = saved.map { s ->
+            val d = defaults[s.id]
+            // Untouched default (its links are a subset of the new ones): take the new links and aliases.
+            if (d != null && d.targets.containsAll(s.targets)) s.copy(targets = d.targets, aliases = (s.aliases + d.aliases).distinct()) else s
+        } + AppShortcut.DEFAULTS.filter { d -> saved.none { it.id == d.id } }
+        writeShortcuts(upgraded) // called while _shortcuts is being created, so only write the prefs
+        return upgraded
+    }
+
+    private companion object { const val SHORTCUTS_VERSION = 2 }
+
+    private fun loadSavedShortcuts(): List<AppShortcut>? = prefs.getString("shortcuts", null)?.let { raw ->
         runCatching {
             val a = JSONArray(raw)
             (0 until a.length()).map { i ->
@@ -127,5 +171,5 @@ class Store(context: Context) {
                 )
             }
         }.getOrNull()
-    } ?: AppShortcut.DEFAULTS
+    }
 }

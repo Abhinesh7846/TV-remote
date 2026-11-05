@@ -37,6 +37,9 @@ object KeyCodes {
     const val SLEEP = 223
     const val WAKEUP = 224
     const val ALL_APPS = 284
+    const val TV_INPUT_HDMI_1 = 243
+    const val TV_INPUT_HDMI_2 = 244
+    const val TV_INPUT_HDMI_3 = 245
 
     /** Best-effort key events for typing when the TV's keyboard ignores IME text. */
     fun forChar(c: Char): Int? = when (c) {
@@ -60,7 +63,7 @@ object KeyCodes {
     private val names = mapOf(
         HOME to "Home", BACK to "Back", DPAD_UP to "Up", DPAD_DOWN to "Down", DPAD_LEFT to "Left",
         DPAD_RIGHT to "Right", DPAD_CENTER to "OK", VOLUME_UP to "Volume up", VOLUME_DOWN to "Volume down",
-        POWER to "Power", ENTER to "Enter", DEL to "Delete", MENU to "Menu", SEARCH to "Search",
+        POWER to "Power", ENTER to "Enter", DEL to "Delete", MENU to "Menu", SEARCH to "Google Assistant",
         MEDIA_PLAY_PAUSE to "Play/Pause", MEDIA_STOP to "Stop", MEDIA_NEXT to "Next", MEDIA_PREVIOUS to "Previous",
         MEDIA_REWIND to "Rewind", MEDIA_FAST_FORWARD to "Fast forward", MEDIA_PLAY to "Play", MEDIA_PAUSE to "Pause",
         VOLUME_MUTE to "Mute", INFO to "Info", CHANNEL_UP to "Channel up", CHANNEL_DOWN to "Channel down",

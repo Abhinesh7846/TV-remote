@@ -74,6 +74,21 @@ import com.abhinesh.tvremote.voice.SpeechPrefs
 import com.abhinesh.tvremote.voice.SpeechUi
 import com.abhinesh.tvremote.voice.TvVoiceUi
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
+import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.sp
 
 @Composable
 fun VoiceScreen(app: TvRemoteApp) {
@@ -88,128 +103,166 @@ fun VoiceScreen(app: TvRemoteApp) {
     // Leaving the screen stops any microphone use at once.
     DisposableEffect(Unit) { onDispose { app.phoneSpeech.cancel(); app.tvVoice.cancel() } }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Voice", style = MaterialTheme.typography.titleLarge)
+    val settings by app.store.settings.collectAsStateWithLifecycle()
+    val log by app.repo.voiceLog.collectAsStateWithLifecycle()
+    val state by app.phoneSpeech.state.collectAsStateWithLifecycle()
+    var more by remember { mutableStateOf(false) }
+    var tryIndex by remember { mutableStateOf(0) }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp),
+    ) {
+        ScreenTitle("Voice")
         if (permDenied) {
             Column(Modifier.fillMaxWidth().background(Ui.danger.copy(alpha = 0.12f), RoundedCornerShape(14.dp)).padding(12.dp)) {
-                Text("Microphone permission is off, so voice can't be used. All other remote features still work.", color = Ui.danger)
+                Text("Microphone permission is off, so voice can't be used.", color = Ui.danger)
                 TextButton(onClick = {
                     context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
-                }) { Text("Open app permissions") }
+                }) { Text("Open app permissions", color = Ui.accentText) }
             }
         }
-        PhoneCommandsCard(app, ::ensureMic)
-        TvVoiceCard(app, ::ensureMic)
-        SpeechEngineCard(app)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf("en-IN" to "English", "te-IN" to "తెలుగు", "hi-IN" to "हिन्दी").forEach { (tag, name) ->
+                Pill(name, settings.speechLanguage == tag, { app.store.updateSettings { it.copy(speechLanguage = tag) } }, Modifier.weight(1f))
+            }
+        }
+        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+            BigSpeakButton(app, state, onPermissionDenied = { permDenied = true })
+        }
+        FeedbackCard(app, log.firstOrNull(), state)
+        val tries = examples(settings.speechLanguage)
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Ui.surface).border(1.dp, Ui.border, RoundedCornerShape(20.dp))
+                .clickable { tryIndex = (tryIndex + 1) % tries.size }.padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.AutoAwesome, null, tint = Ui.accentText, modifier = Modifier.size(22.dp))
+            Spacer(Modifier.width(12.dp))
+            ScriptText("Try: ${tries[tryIndex % tries.size]}", color = Ui.text, style = MaterialTheme.typography.bodyLarge)
+        }
+        TextButton(onClick = { more = !more }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(if (more) "Hide voice options" else "More voice options", color = Ui.accentText)
+        }
+        if (more) {
+            if (app.phoneSpeech.autoDetectAvailable()) VoiceLanguageChips(app)
+            log.drop(1).forEach { e -> FeedbackCard(app, e, null) }
+            AssistantCard(app)
+            SpeechEngineCard(app)
+        }
     }
 }
 
+/** Large circular copper microphone: hold to speak, or tap and speak. */
+@Composable
+private fun BigSpeakButton(app: TvRemoteApp, state: SpeechUi, onPermissionDenied: () -> Unit) {
+    val listening = state is SpeechUi.Listening
+    val busy = state is SpeechUi.Preparing || state is SpeechUi.Processing
+    val pulse = listeningPulse(listening, 1.06f, 700)
+    Box(
+        Modifier.size(212.dp).scale(if (listening) pulse else 1f).clip(CircleShape).background(Ui.accent.copy(alpha = 0.16f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.size(184.dp).clip(CircleShape)
+                .background(if (listening) Brush.linearGradient(listOf(Ui.danger, Ui.accentDark)) else Ui.copper)
+                .then(rememberSpeakGesture(app, onPermissionDenied)),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(Icons.Rounded.Mic, null, Modifier.size(64.dp), tint = Ui.onAccent)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                when { listening -> "Listening…"; state is SpeechUi.Preparing -> "Starting…"; state is SpeechUi.Popup -> "Opening…"; busy -> "Got it…"; else -> "Hold to speak" },
+                color = Ui.onAccent, style = MaterialTheme.typography.titleLarge, fontSize = 21.sp,
+            )
+        }
+    }
+}
+
+/** "You said" card: the words heard, then the command's result as reported by the TV. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PhoneCommandsCard(app: TvRemoteApp, ensureMic: () -> Boolean) {
-    val speech = app.phoneSpeech
-    val state by speech.state.collectAsStateWithLifecycle()
-    val settings by app.store.settings.collectAsStateWithLifecycle()
-    val shortcuts by app.store.shortcuts.collectAsStateWithLifecycle()
-    val log by app.repo.voiceLog.collectAsStateWithLifecycle()
-    val autoWorks by speech.autoDetectWorks.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(autoWorks) {
-        if (autoWorks != settings.autoDetectWorks) app.store.updateSettings { it.copy(autoDetectWorks = autoWorks) }
-        if (autoWorks == false && settings.speechLanguage == SpeechLanguages.AUTO) {
-            app.store.updateSettings { it.copy(speechLanguage = "en-IN") }
-            app.repo.notify("Your phone's recogniser didn't report the language it detected, so auto-detect isn't offered. Choose a language.")
+fun FeedbackCard(app: TvRemoteApp, e: VoiceEntry?, state: SpeechUi?) {
+    GCard(padding = 20.dp) {
+        Text("You said", color = Ui.textDim, style = MaterialTheme.typography.bodyLarge)
+        val heard = when {
+            state is SpeechUi.Listening -> state.partial.ifBlank { "…" }
+            e != null -> e.heard
+            else -> null
         }
-    }
-    LaunchedEffect(state) {
-        val heard = state as? SpeechUi.Heard ?: return@LaunchedEffect
-        app.repo.handleSpeech(heard.alternatives, heard.engine, heard.detectedLanguage ?: heard.language)
-        speech.clear()
-    }
-
-    Card {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Mic, null, tint = Ui.accent)
-            Text("  Phone commands", style = MaterialTheme.typography.titleMedium)
-        }
-        Text("Your phone recognises the words, this app works out the command, and the TV gets normal remote buttons.", color = Ui.textDim, style = MaterialTheme.typography.bodySmall)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            SpeechLanguages.ALL.forEach { (tag, name) ->
-                FilterChip(selected = settings.speechLanguage == tag, onClick = { app.store.updateSettings { it.copy(speechLanguage = tag) } }, label = { Text(name) })
+        if (heard != null) ScriptText("“$heard”", style = MaterialTheme.typography.headlineSmall, color = Ui.text, fontSize = 24.sp)
+        else Text("Nothing yet", style = MaterialTheme.typography.titleLarge, color = Ui.textMuted)
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Ui.border))
+        when {
+            state is SpeechUi.Error -> ResultLine(Icons.Rounded.ErrorOutline, Ui.warning, state.message)
+            e == null -> Text("Press the button and say a command, like \"volume up\" or \"open Netflix\".", color = Ui.textDim)
+            e.running -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), color = Ui.accent, strokeWidth = 2.dp)
+                Spacer(Modifier.width(12.dp)); ScriptText(e.understood, color = Ui.textDim)
             }
-            if (speech.autoDetectAvailable()) {
-                FilterChip(
-                    selected = settings.speechLanguage == SpeechLanguages.AUTO,
-                    onClick = { app.store.updateSettings { it.copy(speechLanguage = SpeechLanguages.AUTO) } },
-                    label = { Text(if (autoWorks == true) "Auto-detect" else "Auto-detect (untested)") },
-                )
-            }
-        }
-        Text(examples(settings.speechLanguage), color = Ui.textDim, style = MaterialTheme.typography.bodySmall)
-        PushToTalk(
-            listening = state is SpeechUi.Listening,
-            preparing = state is SpeechUi.Preparing,
-            level = (state as? SpeechUi.Listening)?.level ?: 0f,
-            label = "Hold, wait for \"Speak now\", then speak",
-            onStart = {
-                // UNDISPATCHED: the "holding" flag is set before a quick release can call stop().
-                if (ensureMic()) scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
-                    speech.start(SpeechPrefs(settings.speechLanguage, settings.speechEngine, settings.onDeviceOnly, biasing(shortcuts.map { it.label })))
+            else -> {
+                val (icon, color) = when (e.outcome) {
+                    Outcome.CONFIRMED -> Icons.Rounded.CheckCircle to Ui.success
+                    Outcome.SENT -> Icons.AutoMirrored.Rounded.Send to Ui.text
+                    Outcome.NOTHING_TO_DO -> Icons.Rounded.Info to Ui.textDim
+                    Outcome.NEEDS_YOU -> Icons.AutoMirrored.Rounded.HelpOutline to Ui.warning
+                    else -> Icons.Rounded.ErrorOutline to Ui.danger
                 }
-            },
-            onStop = { speech.stop() },
-            onCancel = { speech.cancel() },
-        )
-        when (val s = state) {
-            is SpeechUi.Preparing -> Text("Starting the microphone… wait for \"Speak now\".", color = Ui.warning)
-            is SpeechUi.Listening -> Text("● Speak now. Recognised ${s.engine}. ${s.partial}", color = Ui.danger, fontWeight = FontWeight.Medium)
-            is SpeechUi.Processing -> Text("Microphone off. Recognising ${s.engine}…", color = Ui.textDim)
-            is SpeechUi.Error -> Text(s.message, color = Ui.warning)
-            else -> {}
+                ResultLine(icon, color, e.message.ifEmpty { e.understood }, if (e.options.isEmpty()) e.understood else null)
+                if (e.options.isNotEmpty()) {
+                    ScriptText(e.understood, color = Ui.warning, style = MaterialTheme.typography.bodyMedium)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        e.options.forEach { opt -> Pill(opt.summary, false, { app.repo.chooseOption(e.id, opt) }) }
+                    }
+                }
+            }
         }
-        if (speech.lastEngineNote.isNotEmpty() && state !is SpeechUi.Idle) Text(speech.lastEngineNote, color = Ui.textDim, style = MaterialTheme.typography.bodySmall)
-        log.forEach { e -> EntryView(e) { action -> app.repo.chooseOption(e.id, action) } }
     }
 }
 
-private fun examples(lang: String) = when (lang) {
-    "te-IN" -> "\"యూట్యూబ్ ఓపెన్ చెయ్యి\" · \"సౌండ్ పెంచు\" · \"సౌండ్ తగ్గించు\" · \"మ్యూట్\" · \"ఈ యాప్ క్లోజ్ చేయి\" · \"హోమ్\" · \"వెనక్కి\" · \"పాజ్\""
-    "hi-IN" -> "\"यूट्यूब खोलो\" · \"आवाज़ बढ़ाओ\" · \"आवाज़ कम करो\" · \"म्यूट करो\" · \"ये ऐप बंद करो\" · \"होम\" · \"वापस जाओ\" · \"रोको\""
-    else -> "\"Open Netflix\" · \"increase volume\" · \"decrease volume\" · \"mute\" · \"unmute\" · \"close this app\" · \"go home\" · \"back\" · \"pause\""
-}
-
-/** Hints for on-device recognisers (Android 13+): app names and command words in all three languages. */
-private fun biasing(appLabels: List<String>) = appLabels + listOf(
-    "Netflix", "YouTube", "JioHotstar", "Hotstar", "Prime Video", "open", "close", "volume up", "volume down", "mute", "unmute",
-    "యూట్యూబ్", "నెట్‌ఫ్లిక్స్", "హాట్‌స్టార్", "ప్రైమ్ వీడియో", "ఓపెన్", "క్లోజ్", "సౌండ్", "పెంచు", "తగ్గించు",
-    "यूट्यूब", "नेटफ्लिक्स", "हॉटस्टार", "प्राइम वीडियो", "खोलो", "बंद करो", "आवाज़", "बढ़ाओ", "कम करो",
-)
-
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EntryView(e: VoiceEntry, onChoose: (com.abhinesh.tvremote.core.voice.VoiceAction) -> Unit) {
-    val (label, color) = when (e.outcome) {
-        null -> "Running…" to Ui.textDim
-        Outcome.CONFIRMED -> "✓ Confirmed by the TV" to Ui.success
-        Outcome.SENT -> "➜ Sent" to Ui.text
-        Outcome.NOTHING_TO_DO -> "• Nothing to do" to Ui.textDim
-        Outcome.NEEDS_YOU -> "? Needs your answer" to Ui.warning
-        Outcome.FAILED -> "✗ Failed" to Ui.danger
-        Outcome.UNSUPPORTED -> "✗ Not supported" to Ui.danger
+private fun ResultLine(icon: ImageVector, color: Color, text: String, detail: String? = null) {
+    Row(verticalAlignment = Alignment.Top) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(26.dp))
+        Spacer(Modifier.width(12.dp))
+        Column {
+            ScriptText(text, color = Ui.text, style = MaterialTheme.typography.bodyLarge)
+            detail?.let { ScriptText(it, color = Ui.textMuted, style = MaterialTheme.typography.bodySmall) }
+        }
     }
-    Column(Modifier.fillMaxWidth().background(Ui.key, RoundedCornerShape(14.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("You said: \"${e.heard}\"", fontWeight = FontWeight.Medium)
-        Text("${SpeechLanguages.name(e.language)} · recognised ${e.engine}", color = Ui.textDim, style = MaterialTheme.typography.bodySmall)
-        Text("Understood: ${e.understood}")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (e.running) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-            Text(if (e.running) "  Running…" else label, color = color, fontWeight = FontWeight.Medium)
+}
+
+/** Compact result card used by the Remote tab. */
+@Composable
+fun EntryView(e: VoiceEntry, onChoose: (com.abhinesh.tvremote.core.voice.VoiceAction) -> Unit) {
+    val (icon, color) = when (e.outcome) {
+        null -> Icons.Rounded.Info to Ui.textDim
+        Outcome.CONFIRMED -> Icons.Rounded.CheckCircle to Ui.success
+        Outcome.SENT -> Icons.AutoMirrored.Rounded.Send to Ui.text
+        Outcome.NOTHING_TO_DO -> Icons.Rounded.Info to Ui.textDim
+        Outcome.NEEDS_YOU -> Icons.AutoMirrored.Rounded.HelpOutline to Ui.warning
+        else -> Icons.Rounded.ErrorOutline to Ui.danger
+    }
+    GCard(padding = 14.dp) {
+        ScriptText("“${e.heard}”", fontWeight = FontWeight.SemiBold)
+        ResultLine(icon, color, if (e.running) "Running ${e.understood}…" else e.message.ifEmpty { e.understood })
+        if (e.options.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            e.options.take(3).forEach { opt -> Pill(opt.summary, false, { onChoose(opt) }) }
         }
-        if (e.message.isNotEmpty()) Text(e.message, style = MaterialTheme.typography.bodySmall)
-        if (e.options.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            e.options.forEach { opt -> AssistChip(onClick = { onChoose(opt) }, label = { Text(opt.summary) }) }
-        }
+    }
+}
+
+/** Google Assistant on the TV: opened with the Search key, which works on the MiTV-AXFR2. */
+@Composable
+private fun AssistantCard(app: TvRemoteApp) {
+    Card {
+        Text("Google Assistant on the TV", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Opens the TV's own Assistant. Talk to it with the TV remote's mic. You can also say \"open Assistant\" here. " +
+                "Your TV ignores voice sent from phone apps (tested), so use the button above for TV commands.",
+            color = Ui.textDim, style = MaterialTheme.typography.bodySmall,
+        )
+        OutlineCopperButton("Open Assistant on TV", { app.repo.openAssistant() }, icon = Icons.Rounded.AutoAwesome)
     }
 }
 
@@ -269,6 +322,7 @@ private fun SpeechEngineCard(app: TvRemoteApp) {
                 add("auto" to "Automatic")
                 if (speech.onDeviceAvailable()) add("ondevice" to "On-device")
                 add("default" to "Phone default")
+                if (speech.popupAvailable()) add("popup" to "Google voice popup")
                 services.forEach { (c, label) -> add(c.flattenToString() to label) }
             }
             choices.forEach { (key, label) ->
@@ -326,7 +380,7 @@ private fun PushToTalk(listening: Boolean, preparing: Boolean, level: Float, lab
     val start by rememberUpdatedState(onStart)
     val stop by rememberUpdatedState(onStop)
     val cancel by rememberUpdatedState(onCancel)
-    val pulse by rememberInfiniteTransition(label = "mic").animateFloat(1f, 1.12f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "pulse")
+    val pulse = listeningPulse(listening, 1.12f, 600)
     LaunchedEffect(listening) { if (listening) haptic(true) }
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -359,4 +413,10 @@ private fun PushToTalk(listening: Boolean, preparing: Boolean, level: Float, lab
             )
         }
     }
+}
+
+private fun examples(lang: String) = when (lang) {
+    "te-IN" -> listOf("యూట్యూబ్ ఓపెన్ చెయ్యి", "సౌండ్ పెంచు", "యూట్యూబ్‌లో పుష్ప సాంగ్స్ పెట్టు", "ఈ యాప్ క్లోజ్ చేయి")
+    "hi-IN" -> listOf("यूट्यूब खोलो", "आवाज़ बढ़ाओ", "नेटफ्लिक्स पर स्ट्रेंजर थिंग्स दिखाओ", "ये ऐप बंद करो")
+    else -> listOf("Open Netflix", "Volume up", "Play Jawan on JioHotstar", "Close this app", "Go home")
 }

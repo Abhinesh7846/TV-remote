@@ -1,6 +1,21 @@
 package com.abhinesh.tvremote.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +51,7 @@ import androidx.compose.material.icons.rounded.Gamepad
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Keyboard
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
@@ -85,93 +101,232 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
-fun RemoteScreen(app: TvRemoteApp) {
+fun RemoteScreen(app: TvRemoteApp, onOpenSettings: () -> Unit = {}) {
     val repo = app.repo
     val settings by app.store.settings.collectAsStateWithLifecycle()
     val shortcuts by app.store.shortcuts.collectAsStateWithLifecycle()
     val launching by repo.launching.collectAsStateWithLifecycle()
     var keyboard by remember { mutableStateOf(false) }
+    var more by remember { mutableStateOf(false) }
 
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        StatusHeader(app)
+        StatusHeader(app, onOpenSettings)
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            shortcuts.take(4).forEach { s ->
-                ShortcutTile(s, launching == s.id, Modifier.weight(1f)) { repo.launch(s) }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                if (settings.swipePad) SwipePad(onDirection = { repo.key(it) }, onTap = { repo.key(KeyCodes.DPAD_CENTER) })
+                else SegmentedDPad(app)
+            }
+            VolumeRocker(app)
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            RemoteKey("Back", { repo.key(KeyCodes.BACK) }, Modifier.weight(1f).height(66.dp), hold = Hold.LONG,
+                onLongStart = { repo.keyDown(KeyCodes.BACK) }, onLongEnd = { repo.keyUp(KeyCodes.BACK) }, shape = RoundedCornerShape(18.dp)) {
+                StackedIcon(Icons.AutoMirrored.Rounded.Undo, "Back")
+            }
+            RemoteKey("Home", { repo.key(KeyCodes.HOME) }, Modifier.weight(1f).height(66.dp), hold = Hold.LONG,
+                onLongStart = { repo.keyDown(KeyCodes.HOME) }, onLongEnd = { repo.keyUp(KeyCodes.HOME) }, shape = RoundedCornerShape(18.dp)) {
+                StackedIcon(Icons.Outlined.Home, "Home")
+            }
+            RemoteKey("Play or pause", { repo.key(KeyCodes.MEDIA_PLAY_PAUSE) }, Modifier.weight(1f).height(66.dp), shape = RoundedCornerShape(18.dp)) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.PlayArrow, null, Modifier.size(24.dp)); Icon(Icons.Rounded.Pause, null, Modifier.size(20.dp))
+                    }
+                    Text("Play / Pause", style = MaterialTheme.typography.labelLarge, color = Ui.text)
+                }
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PowerKey(app, Modifier.weight(1f))
-            IconKey("Input source", Icons.AutoMirrored.Rounded.Input, Modifier.weight(1f)) { repo.key(KeyCodes.TV_INPUT) }
-            IconKey("Keyboard", Icons.Rounded.Keyboard, Modifier.weight(1f)) { keyboard = true }
-            IconKey("TV settings", Icons.Rounded.Settings, Modifier.weight(1f)) { repo.key(KeyCodes.SETTINGS) }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) { HoldToSpeakBar(app) }
+            AssistantKey(app)
+        }
+        RemoteVoiceLine(app)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            shortcuts.take(4).forEach { s -> OttTile(s, launching == s.id, Modifier.weight(1f), compact = true) { repo.launch(s) } }
+            repeat(4 - shortcuts.take(4).size) { Spacer(Modifier.weight(1f)) }
         }
 
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            if (settings.swipePad) {
-                SwipePad(onDirection = { repo.key(it) }, onTap = { repo.key(KeyCodes.DPAD_CENTER) })
-            } else {
-                DPad(app)
+        TextButton(onClick = { more = !more }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(if (more) "Fewer controls" else "More controls", color = Ui.accentText)
+        }
+        if (more) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                IconKey("Keyboard", Icons.Outlined.Keyboard, Modifier.weight(1f)) { keyboard = true }
+                IconKey("Input source", Icons.AutoMirrored.Rounded.Input, Modifier.weight(1f)) { repo.key(KeyCodes.TV_INPUT) }
+                IconKey("TV settings", Icons.Outlined.Settings, Modifier.weight(1f)) { repo.key(KeyCodes.SETTINGS) }
+                IconKey(if (settings.swipePad) "Switch to D-pad" else "Switch to swipe pad",
+                    if (settings.swipePad) Icons.Rounded.Gamepad else Icons.Rounded.TouchApp, Modifier.weight(1f)) {
+                    app.store.updateSettings { it.copy(swipePad = !it.swipePad) }
+                }
+            }
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Ui.key), horizontalArrangement = Arrangement.SpaceEvenly) {
+                MediaKey("Previous", Icons.Rounded.SkipPrevious) { repo.key(KeyCodes.MEDIA_PREVIOUS) }
+                MediaKey("Rewind", Icons.Rounded.FastRewind) { repo.key(KeyCodes.MEDIA_REWIND) }
+                MediaKey("Fast forward", Icons.Rounded.FastForward) { repo.key(KeyCodes.MEDIA_FAST_FORWARD) }
+                MediaKey("Next", Icons.Rounded.SkipNext) { repo.key(KeyCodes.MEDIA_NEXT) }
             }
         }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RemoteKey("Back", { repo.key(KeyCodes.BACK) }, Modifier.weight(1f).height(60.dp), hold = Hold.LONG,
-                onLongStart = { repo.keyDown(KeyCodes.BACK) }, onLongEnd = { repo.keyUp(KeyCodes.BACK) }) {
-                LabeledIcon(Icons.AutoMirrored.Rounded.ArrowBack, "Back")
-            }
-            RemoteKey("Home", { repo.key(KeyCodes.HOME) }, Modifier.weight(1f).height(60.dp), hold = Hold.LONG,
-                onLongStart = { repo.keyDown(KeyCodes.HOME) }, onLongEnd = { repo.keyUp(KeyCodes.HOME) }) {
-                LabeledIcon(Icons.Rounded.Home, "Home")
-            }
-            RemoteKey(
-                if (settings.swipePad) "Switch to D-pad" else "Switch to swipe pad",
-                { app.store.updateSettings { it.copy(swipePad = !it.swipePad) } }, Modifier.weight(1f).height(60.dp),
-            ) {
-                if (settings.swipePad) LabeledIcon(Icons.Rounded.Gamepad, "D-pad") else LabeledIcon(Icons.Rounded.TouchApp, "Swipe")
-            }
-        }
-
-        VolumeRow(app)
-
-        Row(Modifier.fillMaxWidth().background(Ui.key, RoundedCornerShape(18.dp)), horizontalArrangement = Arrangement.SpaceEvenly) {
-            MediaKey("Previous", Icons.Rounded.SkipPrevious) { repo.key(KeyCodes.MEDIA_PREVIOUS) }
-            MediaKey("Rewind", Icons.Rounded.FastRewind) { repo.key(KeyCodes.MEDIA_REWIND) }
-            MediaKey("Play or pause", Icons.Rounded.PlayArrow) { repo.key(KeyCodes.MEDIA_PLAY_PAUSE) }
-            MediaKey("Fast forward", Icons.Rounded.FastForward) { repo.key(KeyCodes.MEDIA_FAST_FORWARD) }
-            MediaKey("Next", Icons.Rounded.SkipNext) { repo.key(KeyCodes.MEDIA_NEXT) }
-        }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
     }
 
     if (keyboard) KeyboardSheet(app) { keyboard = false }
 }
 
 @Composable
-fun StatusHeader(app: TvRemoteApp) {
+private fun StackedIcon(icon: ImageVector, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, Modifier.size(26.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = Ui.text)
+    }
+}
+
+/** Opens Google Assistant on the TV itself. */
+@Composable
+private fun AssistantKey(app: TvRemoteApp) {
+    RemoteKey(
+        "Open Google Assistant on the TV", { app.repo.openAssistant() }, Modifier.size(width = 84.dp, height = 76.dp),
+        shape = RoundedCornerShape(22.dp), color = Ui.key, contentColor = Ui.accentText,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(28.dp))
+            Text("Assistant", style = MaterialTheme.typography.labelMedium, color = Ui.text, fontSize = 11.sp)
+        }
+    }
+}
+
+/** Copper bar on the Remote tab: hold to speak, or tap once to talk until you stop. */
+@Composable
+private fun HoldToSpeakBar(app: TvRemoteApp) {
+    val state by app.phoneSpeech.state.collectAsStateWithLifecycle()
+    val settings by app.store.settings.collectAsStateWithLifecycle()
+    val listening = state is com.abhinesh.tvremote.voice.SpeechUi.Listening
+    val title = when (state) {
+        is com.abhinesh.tvremote.voice.SpeechUi.Preparing -> "Starting mic…"
+        is com.abhinesh.tvremote.voice.SpeechUi.Listening -> "Speak now…"
+        is com.abhinesh.tvremote.voice.SpeechUi.Processing -> "Got it…"
+        is com.abhinesh.tvremote.voice.SpeechUi.Popup -> "Opening voice…"
+        else -> "Hold to speak"
+    }
+    Row(
+        Modifier.fillMaxWidth().height(76.dp).clip(RoundedCornerShape(22.dp))
+            .background(if (listening) androidx.compose.ui.graphics.Brush.linearGradient(listOf(Ui.danger, Ui.accentDark)) else Ui.copper)
+            .then(rememberSpeakGesture(app)).padding(horizontal = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Mic, null, Modifier.size(32.dp), tint = Ui.onAccent)
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(title, color = Ui.onAccent, style = MaterialTheme.typography.titleLarge, fontSize = 20.sp, maxLines = 1)
+            Row {
+                com.abhinesh.tvremote.voice.SpeechLanguages.ALL.forEachIndexed { i, (tag, _) ->
+                    val label = when (tag) { "te-IN" -> "తెలుగు"; "hi-IN" -> "हिन्दी"; else -> "English" }
+                    if (i > 0) Text(" · ", color = Ui.onAccent.copy(alpha = 0.8f))
+                    ScriptText(label, color = Ui.onAccent.copy(alpha = if (settings.speechLanguage == tag) 1f else 0.7f),
+                        fontWeight = if (settings.speechLanguage == tag) FontWeight.Bold else FontWeight.Normal, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+/** Large direction pad made of four rounded segments around a raised OK button. */
+@Composable
+private fun SegmentedDPad(app: TvRemoteApp) {
+    val repo = app.repo
+    val seg = Ui.key
+    BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+        val s = maxWidth
+        val long = s * 0.46f
+        val thick = s * 0.29f
+        val r = RoundedCornerShape(s * 0.12f)
+        RemoteKey("Up", { repo.key(KeyCodes.DPAD_UP) }, Modifier.align(Alignment.TopCenter).size(long, thick), Hold.REPEAT, shape = r, color = seg) {
+            Icon(Icons.Rounded.KeyboardArrowUp, null, Modifier.size(s * 0.15f))
+        }
+        RemoteKey("Down", { repo.key(KeyCodes.DPAD_DOWN) }, Modifier.align(Alignment.BottomCenter).size(long, thick), Hold.REPEAT, shape = r, color = seg) {
+            Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(s * 0.15f))
+        }
+        RemoteKey("Left", { repo.key(KeyCodes.DPAD_LEFT) }, Modifier.align(Alignment.CenterStart).size(thick, long), Hold.REPEAT, shape = r, color = seg) {
+            Icon(Icons.Rounded.ChevronLeft, null, Modifier.size(s * 0.15f))
+        }
+        RemoteKey("Right", { repo.key(KeyCodes.DPAD_RIGHT) }, Modifier.align(Alignment.CenterEnd).size(thick, long), Hold.REPEAT, shape = r, color = seg) {
+            Icon(Icons.Rounded.ChevronRight, null, Modifier.size(s * 0.15f))
+        }
+        Box(Modifier.size(s * 0.36f).clip(RoundedCornerShape(s * 0.1f)).background(Ui.bg), contentAlignment = Alignment.Center) {
+            RemoteKey(
+                "OK", { repo.key(KeyCodes.DPAD_CENTER) }, Modifier.size(s * 0.3f), Hold.LONG,
+                onLongStart = { repo.keyDown(KeyCodes.DPAD_CENTER) }, onLongEnd = { repo.keyUp(KeyCodes.DPAD_CENTER) },
+                shape = RoundedCornerShape(s * 0.08f), color = Ui.keyPressed,
+            ) { Text("OK", fontSize = (s.value * 0.1f).sp, fontWeight = FontWeight.Bold, color = Ui.text) }
+        }
+    }
+}
+
+/** Vertical rocker: volume up, mute, volume down. */
+@Composable
+private fun VolumeRocker(app: TvRemoteApp) {
+    val repo = app.repo
+    val status by repo.status.collectAsStateWithLifecycle()
+    Column(Modifier.width(72.dp).clip(RoundedCornerShape(24.dp)).background(Ui.key), horizontalAlignment = Alignment.CenterHorizontally) {
+        RemoteKey("Volume up", { repo.key(KeyCodes.VOLUME_UP) }, Modifier.fillMaxWidth().height(78.dp), Hold.REPEAT, shape = RoundedCornerShape(24.dp), color = Ui.key) {
+            Icon(Icons.Rounded.Add, null, Modifier.size(30.dp))
+        }
+        RemoteKey(if (status?.muted == true) "Unmute" else "Mute", { repo.key(KeyCodes.VOLUME_MUTE) }, Modifier.fillMaxWidth().height(66.dp), shape = RoundedCornerShape(16.dp), color = Ui.key) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(if (status?.muted == true) Icons.AutoMirrored.Rounded.VolumeOff else Icons.AutoMirrored.Rounded.VolumeUp, null, Modifier.size(24.dp),
+                    tint = if (status?.muted == true) Ui.warning else Ui.text)
+                status?.volumeLevel?.let { Text("$it", fontSize = 11.sp, color = Ui.textDim) }
+            }
+        }
+        RemoteKey("Volume down", { repo.key(KeyCodes.VOLUME_DOWN) }, Modifier.fillMaxWidth().height(78.dp), Hold.REPEAT, shape = RoundedCornerShape(24.dp), color = Ui.key) {
+            Icon(Icons.Rounded.Remove, null, Modifier.size(30.dp))
+        }
+    }
+}
+
+/** Voice result on the Remote tab: shown while listening and for 15 s after a command. */
+@Composable
+private fun RemoteVoiceLine(app: TvRemoteApp) {
+    val state by app.phoneSpeech.state.collectAsStateWithLifecycle()
+    val log by app.repo.voiceLog.collectAsStateWithLifecycle()
+    var recent by remember { mutableStateOf(false) }
+    val latest = log.firstOrNull()
+    LaunchedEffect(latest?.id, latest?.running) {
+        if (latest == null) return@LaunchedEffect
+        recent = true
+        if (!latest.running && latest.options.isEmpty()) { delay(15_000); recent = false }
+    }
+    if (state !is com.abhinesh.tvremote.voice.SpeechUi.Idle || recent) VoiceStatus(app, showAll = false)
+}
+
+@Composable
+fun StatusHeader(app: TvRemoteApp, onOpenSettings: () -> Unit = {}) {
     val tv by app.store.tv.collectAsStateWithLifecycle()
     val conn by app.repo.connection.collectAsStateWithLifecycle()
     val status by app.repo.status.collectAsStateWithLifecycle()
     val shortcuts by app.store.shortcuts.collectAsStateWithLifecycle()
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(tv?.name ?: "TV", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(subtitle(tv?.model, conn, status, shortcuts), color = Ui.textDim, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+            Text(tv?.name ?: "TV", style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val (label, color) = chip(conn, status)
+            StatusDot(label, color)
+            subtitle(tv?.model, conn, status, shortcuts).takeIf { it.isNotEmpty() }?.let {
+                Text(it, color = Ui.textMuted, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
-        val (label, color) = chip(conn, status)
-        Text(
-            label, color = color, fontSize = 13.sp, fontWeight = FontWeight.Medium,
-            modifier = Modifier.background(color.copy(alpha = 0.14f), RoundedCornerShape(50)).padding(horizontal = 12.dp, vertical = 6.dp),
-        )
+        IconButton(onClick = onOpenSettings) { Icon(Icons.Outlined.Settings, "Settings", tint = Ui.textDim) }
+        PowerKey(app, Modifier.size(58.dp))
     }
     when (val c = conn) {
         is ConnectionState.Retrying, is ConnectionState.Idle -> Row(verticalAlignment = Alignment.CenterVertically) {
             Text(friendlyReason(c), color = Ui.warning, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-            TextButton(onClick = { app.repo.reconnectNow() }) { Text("Retry now") }
+            TextButton(onClick = { app.repo.reconnectNow() }) { Text("Retry now", color = Ui.accentText) }
         }
         is ConnectionState.PairingNeeded, is ConnectionState.IdentityChanged -> Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -204,7 +359,7 @@ private fun subtitle(model: String?, conn: ConnectionState, status: TvStatus?, s
 }
 
 fun appName(pkg: String, shortcuts: List<AppShortcut>): String = shortcuts.firstOrNull { it.packageName == pkg }?.label ?: when (pkg) {
-    "com.google.android.apps.tv.launcherx", "com.google.android.tvlauncher", "com.google.android.leanbacklauncher" -> "Home screen"
+    "com.google.android.apps.tv.launcherx", "com.google.android.tvlauncher", "com.google.android.leanbacklauncher", "com.mitv.tvhome" -> "Home screen"
     "com.google.android.katniss" -> "Google Assistant"
     "com.google.android.apps.tv.dreamx" -> "Screensaver"
     "com.android.tv.settings" -> "TV settings"
@@ -297,9 +452,13 @@ private fun PowerKey(app: TvRemoteApp, modifier: Modifier) {
     val busy by repo.powerBusy.collectAsStateWithLifecycle()
     var open by remember { mutableStateOf(false) }
     Box(modifier) {
-        RemoteKey("Power options", { open = true }, Modifier.fillMaxWidth().height(56.dp), contentColor = Ui.danger) {
-            if (busy != null) CircularProgressIndicator(Modifier.size(22.dp), color = Ui.danger, strokeWidth = 2.5.dp)
-            else Icon(Icons.Rounded.PowerSettingsNew, null, Modifier.size(26.dp))
+        RemoteKey(
+            "Power options", { open = true },
+            Modifier.fillMaxSize().border(1.5.dp, Ui.accent, RoundedCornerShape(16.dp)),
+            shape = RoundedCornerShape(16.dp), color = Ui.accentDark.copy(alpha = 0.22f), contentColor = Ui.accentText,
+        ) {
+            if (busy != null) CircularProgressIndicator(Modifier.size(22.dp), color = Ui.accentText, strokeWidth = 2.5.dp)
+            else Icon(Icons.Rounded.PowerSettingsNew, null, Modifier.size(28.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             val connected = conn is ConnectionState.Connected

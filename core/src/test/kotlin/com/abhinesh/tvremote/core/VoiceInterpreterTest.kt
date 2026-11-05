@@ -33,6 +33,31 @@ class VoiceInterpreterTest {
         assertEquals(open("jiohotstar"), action("open jio cinema"))
     }
 
+    @Test fun moreOttApps() {
+        assertEquals(open("sonyliv"), action("open Sony LIV"))
+        assertEquals(open("zee5"), action("open zee5"))
+        assertEquals(open("zee5"), action("zee five"))
+        assertEquals(open("aha"), action("open aha"))
+        assertEquals(open("etvwin"), action("open ETV Win"))
+        assertEquals(open("sunnxt"), action("open sun next"))
+        assertEquals(open("spotify"), action("open spotify"))
+        assertEquals(open("appletv"), action("open apple tv"))
+        assertEquals(open("aha"), action("ఆహా ఓపెన్ చెయ్యి"))
+        assertEquals(open("etvwin"), action("ఈటీవీ విన్ ఓపెన్ చెయ్యి"))
+        assertEquals(open("zee5"), action("జీ5 తెరువు"))
+        assertEquals(open("sonyliv"), action("सोनी लिव खोलो"))
+        assertEquals(open("zee5"), action("ज़ी5 खोलो"))
+        assertEquals(close("sonyliv"), action("close sony liv"))
+    }
+
+    @Test fun googleAssistant() {
+        assertEquals(key(KeyCodes.SEARCH), action("open Google Assistant"))
+        assertEquals(key(KeyCodes.SEARCH), action("hey google"))
+        assertEquals(key(KeyCodes.SEARCH), action("assistant"))
+        assertEquals(key(KeyCodes.SEARCH), action("అసిస్టెంట్ ఓపెన్ చెయ్యి"))
+        assertEquals(key(KeyCodes.SEARCH), action("असिस्टेंट खोलो"))
+    }
+
     @Test fun closeNeverOpens() {
         assertEquals(close("netflix"), action("close Netflix"))
         assertEquals(close("netflix"), action("exit Netflix"))
@@ -150,6 +175,32 @@ class VoiceInterpreterTest {
         assertEquals(open("youtube"), action("youtube kholo"))
         assertEquals(open("primevideo"), action("Prime video खोलो"))
         assertEquals(up(), action("sound పెంచు"))
+    }
+
+    private fun search(id: String, q: String) = VoiceAction.Search(app(id), q)
+
+    @Test fun titleSearchInApps() {
+        assertEquals(search("netflix", "stranger things"), action("play Stranger Things on Netflix"))
+        assertEquals(search("youtube", "pushpa songs"), action("open pushpa songs on YouTube"))
+        assertEquals(search("jiohotstar", "jawan"), action("search Jawan on Hotstar"))
+        assertEquals(search("primevideo", "panchayat"), action("watch the movie Panchayat on Prime Video"))
+        assertEquals(search("youtube", "पुष्पा गाने"), action("यूट्यूब पर पुष्पा गाने चलाओ"))
+        assertEquals(search("netflix", "स्ट्रेंजर थिंग्स"), action("नेटफ्लिक्स पर स्ट्रेंजर थिंग्स दिखाओ"))
+        assertEquals(search("youtube", "పుష్ప సాంగ్స్"), action("యూట్యూబ్‌లో పుష్ప సాంగ్స్ పెట్టు"))
+        assertEquals(search("jiohotstar", "రామాయణం"), action("హాట్‌స్టార్ లో రామాయణం వెతుకు"))
+        // A title without an app asks which app, with one button per service.
+        val ask = assertIs<Interpretation.Clarify>(run("open Jawan"))
+        assertEquals(4, ask.options.size)
+        assertTrue(ask.options.all { it is VoiceAction.Search && it.query == "jawan" })
+    }
+
+    @Test fun plainCommandsAreNotSearches() {
+        assertEquals(open("netflix"), action("hey open Netflix now please"))
+        assertEquals(key(KeyCodes.SETTINGS), action("open settings"))
+        assertEquals(key(KeyCodes.MEDIA_PLAY), action("play"))
+        assertEquals(close(null), action("close all"))
+        assertEquals(close(null), action("सब बंद करो"))
+        assertEquals(up(), action("increase volume"))
     }
 
     @Test fun usesAlternativesOnlyWhenTheBestOneMeansNothing() {

@@ -53,6 +53,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface PairingUi {
     data object Idle : PairingUi
+    /** User asked to pair a (different) TV: show the TV list even though one is saved. */
+    data object Choosing : PairingUi
     data class Connecting(val host: String) : PairingUi
     data class EnterCode(val host: String, val name: String, val error: String? = null, val busy: Boolean = false) : PairingUi
     data class Failed(val host: String, val name: String, val message: String) : PairingUi
@@ -137,12 +139,18 @@ class RemoteRepository(
 
     // ------------------------------------------------------------------ lifecycle
 
+    /** Number of started screens (main app and Share panel); the connection closes only when none is visible. */
+    private var startedScreens = 0
+
     fun onForeground() {
+        startedScreens++
         foreground = true
         if (_pairing.value == PairingUi.Idle) connectSaved()
     }
 
     fun onBackground() {
+        startedScreens = (startedScreens - 1).coerceAtLeast(0)
+        if (startedScreens > 0) return
         foreground = false
         releaseHeldKeys()
         controller.stop()
@@ -192,6 +200,21 @@ class RemoteRepository(
 
     fun releaseHeldKeys() = heldKeys.keys.toList().forEach { keyUp(it) }
 
+    /** Opens Google Assistant on the TV (the Search key did this on the MiTV-AXFR2) and checks it appeared. */
+    fun openAssistant() {
+        val s = session ?: run { notify("Not connected to the TV."); return }
+        s.sendKey(KeyCodes.SEARCH)
+        scope.launch {
+            val shown = withTimeoutOrNull(3_000) { s.status.first { it.currentApp == ASSISTANT_PACKAGE } } != null
+            notify(
+                if (shown) "Google Assistant is open on the TV. Speak into the TV remote's mic, or use Hold to speak here for TV commands."
+                else "Assistant key sent. The TV didn't report Google Assistant opening.",
+            )
+        }
+    }
+
+    companion object { const val ASSISTANT_PACKAGE = "com.google.android.katniss" }
+
     // ------------------------------------------------------------------ text
 
     fun sendText(text: String): Boolean {
@@ -234,6 +257,16 @@ class RemoteRepository(
 
     suspend fun launchAndWait(shortcut: AppShortcut): LaunchResult =
         AppLauncher.launch(shortcut) { controller.session.value }
+
+    /** Send to TV: waits briefly for the connection (the Share screen may have just opened it). */
+    suspend fun sendLink(link: com.abhinesh.tvremote.core.share.SharedLink): com.abhinesh.tvremote.core.share.SendResult {
+        if (session == null) {
+            if (connection.value is ConnectionState.Idle) connectSaved() else controller.retryNow()
+            awaitSession(8_000)
+        }
+        Log.d("TvRemote", "send link service=${link.service} kind=${link.kind}")
+        return com.abhinesh.tvremote.core.share.SendToTv.send(link) { controller.session.value }
+    }
 
     // ------------------------------------------------------------------ power
 
@@ -299,9 +332,38 @@ class RemoteRepository(
 
     private fun run(id: Long, action: VoiceAction) {
         scope.launch {
+            // Coming back from Google's voice popup the connection may still be reopening.
+            if (session == null && action !is VoiceAction.PowerOn) awaitSession(6_000)
             val r = executor.execute(action)
             Log.d("TvRemoteVoice", "action=${action::class.simpleName} outcome=${r.outcome}")
             _voiceLog.update { log -> log.map { if (it.id == id) it.copy(outcome = r.outcome, message = r.message, running = false) else it } }
+        }
+    }
+
+    // ------------------------------------------------------------------ routines
+
+    data class RoutineRun(val running: Boolean, val message: String, val ok: Boolean)
+    private val _routineRuns = MutableStateFlow<Map<String, RoutineRun>>(emptyMap())
+    val routineRuns: StateFlow<Map<String, RoutineRun>> = _routineRuns.asStateFlow()
+
+    /** Runs each step in order through the same verified executor as voice commands. */
+    fun runRoutine(r: com.abhinesh.tvremote.core.Routine) {
+        if (_routineRuns.value[r.id]?.running == true) return
+        scope.launch {
+            val shortcuts = store.shortcuts.value
+            val notes = ArrayList<String>()
+            var ok = true
+            for ((i, step) in r.steps.withIndex()) {
+                val action = com.abhinesh.tvremote.core.RoutineSteps.toAction(step, shortcuts)
+                _routineRuns.update { it + (r.id to RoutineRun(true, "Step ${i + 1} of ${r.steps.size}: " + com.abhinesh.tvremote.core.RoutineSteps.describe(step, shortcuts), true)) }
+                if (action == null) { notes += "Skipped an unknown step."; ok = false; continue }
+                val res = executor.execute(action)
+                Log.d("TvRemote", "routine step=${action::class.simpleName} outcome=${res.outcome}")
+                notes += res.message
+                if (res.outcome == ExecResult.Outcome.FAILED || res.outcome == ExecResult.Outcome.UNSUPPORTED) { ok = false; break }
+                if (i < r.steps.lastIndex) delay(1_500)
+            }
+            _routineRuns.update { it + (r.id to RoutineRun(false, notes.lastOrNull() ?: "Nothing to run.", ok)) }
         }
     }
 
@@ -311,28 +373,33 @@ class RemoteRepository(
         cancelPairing()
         controller.stop()
         _pairing.value = PairingUi.Connecting(host)
-        scope.launch {
+        pairingJob = scope.launch {
             val identity = identityStore.get()
             val p = PairingSession(host.trim(), identity, "TV Remote on ${Build.MANUFACTURER} ${Build.MODEL}")
             pairingSession = p
             try {
                 p.start()
+                if (pairingSession !== p) return@launch // cancelled meanwhile
                 val model = p.serverCertificate?.let { TvCertificateInfo.from(it).model }
                 _pairing.value = PairingUi.EnterCode(host.trim(), name.ifBlank { model ?: "Android TV" })
             } catch (e: PairingException) {
                 p.close()
+                if (pairingSession !== p) return@launch // the user cancelled; don't show an error
                 _pairing.value = PairingUi.Failed(host, name, e.message ?: "Pairing failed.")
             }
         }
     }
 
+    private var pairingJob: Job? = null
+
     fun submitCode(code: String) {
         val st = _pairing.value as? PairingUi.EnterCode ?: return
         val p = pairingSession ?: return
         _pairing.value = st.copy(busy = true, error = null)
-        scope.launch {
+        pairingJob = scope.launch {
             try {
                 p.submitCode(code)
+                if (pairingSession !== p) return@launch // cancelled meanwhile
                 val info = p.serverCertificate?.let { TvCertificateInfo.from(it) }
                 p.close()
                 pairingSession = null
@@ -342,6 +409,7 @@ class RemoteRepository(
                 notify("Paired with ${st.name}.")
                 connectSaved()
             } catch (e: PairingException) {
+                if (pairingSession !== p) return@launch // the user cancelled; don't show an error
                 if (e.reason == PairingException.Reason.CODE_MISTYPED) {
                     _pairing.value = st.copy(busy = false, error = e.message)
                 } else {
@@ -353,7 +421,14 @@ class RemoteRepository(
         }
     }
 
+    fun choosePairing() {
+        cancelPairing()
+        _pairing.value = PairingUi.Choosing
+    }
+
     fun cancelPairing() {
+        pairingJob?.cancel()
+        pairingJob = null
         pairingSession?.close()
         pairingSession = null
         _pairing.value = PairingUi.Idle

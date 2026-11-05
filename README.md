@@ -4,11 +4,39 @@ A native Kotlin + Jetpack Compose phone app that controls your TV directly over 
 the **Android TV Remote protocol v2**, the same protocol the Google TV phone app uses. It needs no laptop, server, cloud,
 account, root, ADB, developer mode or router changes.
 
-- **Download:** `TVRemote-1.1.1.apk` from this repository's [Releases](https://github.com/Abhinesh7846/TV-remote/releases) page.
-  1.1.1 is functionally identical to 1.1.0; it only replaces device-specific example text with generic placeholders.
+- **Current version: 1.4.0** (versionCode 6). APKs are published on this repository's [Releases](https://github.com/Abhinesh7846/TV-remote/releases) page, or build one from source (below).
 - It updates older versions in place: same app ID `com.abhinesh.tvremote`, same signing key (SHA-256 `74b22b7f…35ba`), so pairing and settings are kept.
 - **Source:** this folder (`core/` protocol and voice logic, `app/` Android app, `cli/` laptop test tool).
 - Permissions: Internet (local network only), network state, microphone (asked only when you use voice).
+
+## What's new in 1.2–1.4
+
+### 1.4.0: voice fixed, Google Assistant, more apps
+- **Hold to speak works** (confirmed on a vivo V70 Elite). Before, the app ran a slow offline-support check (up to 3 s) before opening the mic and silently gave up if you let go first.
+  - Now the mic opens immediately. Tap or hold: it stops by itself when you finish talking.
+  - Engines are tried in order: Google's speech service, the phone's default, on-device. Any engine that doesn't answer within 4 s is skipped.
+  - Google's own voice popup is the last fallback.
+- **Assistant button** on the Remote tab, plus the voice command "open Assistant" (also in Telugu and Hindi). It opens Google Assistant on the TV with the Search key; tested on the MiTV-AXFR2.
+  - The TV accepts voice audio streamed from a phone app but ignores it (tested at 8 and 16 kHz), so spoken TV commands go through the phone's recogniser instead.
+- **More apps:** Sony LIV, ZEE5, aha, ETV Win, Sun NXT, Spotify and Apple TV, each with voice names in English, Telugu and Hindi.
+  - Launch links tested on the TV: `sonyliv://`, `https://www.zee5.com`, `aha://`, `spotify://` and `https://tv.apple.com` open the app.
+  - Every shortcut ends with its Play Store page (`market://details?id=…`, which this TV accepts), so a missing app can be installed from there.
+  - `market://launch`, `android-app://` and `intent:` links are refused by this TV.
+- Existing shortcut lists gain the new apps on update; edits and custom apps are kept.
+
+### 1.3.0: Graphite & Copper redesign
+- New look: graphite background, copper accents, Manrope / Noto Sans Telugu / Noto Sans Devanagari fonts (OFL, in `licenses/`).
+- Five tabs: Remote, Apps, Voice, Send, Routines. Settings is behind the gear on the Remote tab.
+- **Routines** (Movie Night, Gaming, Quiet Mode, or your own) run steps through the same verified executor as voice. The Gaming routine's HDMI 2 key hasn't been checked on this TV.
+- Fixes found in review:
+  - the connection no longer drops when moving from the Share panel to the app;
+  - cancelling pairing no longer shows a false error;
+  - Back leaves the pairing screen.
+- `app/src/test/.../ScreenshotTest.kt` renders all five screens at the phone's size (Robolectric + Roborazzi) into `app/screenshots/`.
+
+### 1.2.0: Send to TV
+- Share a YouTube, Netflix, JioHotstar or Prime Video link to **Open on TV**, or paste one on the Send tab.
+- Voice can search inside apps ("play Pushpa on YouTube").
 
 ## What changed in 1.1.0
 
@@ -103,8 +131,8 @@ If a step fails, send me a screenshot of the Voice tab result card. It shows the
 
 - **Phone commands:** recognised on-device when your phone has the language installed. Otherwise your phone's speech service (usually Google) handles it, and may process the audio online.
   The app shows which engine was used for each command. *On-device only* blocks the online path.
-- **TV voice search** streams audio only to your TV.
-- The microphone runs only while you hold the button. It stops on release, slide-off, leaving the screen or the app, or after 15 s.
+- If the in-app recognisers fail, Google's voice popup (the Google app) is used for that one command.
+- The microphone runs only for one command. It stops when you finish speaking, tap again, slide off the button, leave the screen or the app, or after 15 s.
 - Logs record only event types and error codes; never audio, transcripts, keys or certificates.
 
 ## Known limitations
